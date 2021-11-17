@@ -1,0 +1,100 @@
+/* groovylint-disable CompileStatic, NestedBlockDepth, UnnecessaryGString */
+withFolderProperties{
+  registry = env.registry
+}
+
+kanikoCN = 'kaniko'
+kanikoCI = 'gcr.io/kaniko-project/executor:debug'
+golangCN = 'golang'
+golangCI = 'golang:1.17.3-alpine3.14'
+awsCN = 'awscli'
+awsCI = "${registry}/aws-cli:2.2.28"
+appIN = 'kaniko-test'
+String tmpTag = System.currentTimeMillis()
+
+pipeline {
+  agent {
+    kubernetes {
+    yaml """
+kind: Pod
+spec:
+  serviceAccount: ecr-manager
+  containers:
+  - name: ${golangCN}
+    image: ${golangCI}
+    imagePullPolicy: IfNotPresent
+    tty: true
+  - name: ${kanikoCN}
+    image: ${kanikoCI}
+    imagePullPolicy: IfNotPresent
+    command:
+    - cat
+    tty: true
+  - name: ${awsCN}
+    image: ${awsCI}
+    imagePullPolicy: IfNotPresent
+    command:
+    - cat
+    tty: true
+"""
+    }
+  }
+  stages {
+    stage('Build Image') {
+      steps {
+        script {
+          container(golangCN) {
+            sh """
+              apk update && apk add make
+              make install
+              make build-all
+            """
+          }
+        }
+      }
+    }
+    stage('Push Image') {
+      steps {
+        script {
+          container(kanikoCN) {
+            sh """
+              cp jenkins/docker-config.json /kaniko/.docker/config.json
+              /kaniko/executor -f Dockerfile -c . --insecure \
+              --skip-tls-verify --cache=true --log-format=text \
+              --destination=${registry}/${appIN}:${tmpTag}
+            """
+          }
+        }
+      }
+    }
+    stage('Run Image') {
+      steps {
+        script {
+          result = build job: 'dynamic-image', propagate: true,
+              parameters: [
+              string(name: 'image', value: appIN),
+              string(name: 'imagetag', value: tmpTag)
+              ]
+          //println result.getBuildVariables().hostname
+          //println result.getResult()
+        }
+      }
+    }
+  }
+  environment {
+    AWS_DEFAULT_REGION = 'eu-central-1'
+  }
+  post {
+    always {
+      script {
+        container(awsCN) {
+          sh """
+            aws ecr batch-delete-image \
+            --repository-name ${appIN} \
+            --image-ids imageTag=${tmpTag}
+          """
+        }
+      }
+    }
+  }
+}

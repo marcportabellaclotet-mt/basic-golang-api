@@ -1,0 +1,63 @@
+withFolderProperties{
+  registry = env.registry
+}
+
+mysqlCN = 'mysql'
+mysqlCI = 'mysql:5.7'
+mysqlSecret = 'my-secret' // Use a password vault when data is sensitive //
+flywayCN = 'flyway'
+flywayCI = 'flyway/flyway:8.0.4-alpine'
+
+pipeline {
+    agent {
+        kubernetes {
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: api
+    image: "${registry}/${params.image}:${params.imagetag}"
+  - name: ${mysqlCN}
+    image: ${mysqlCI}
+    env:
+    - name: MYSQL_ROOT_PASSWORD
+      value: ${mysqlSecret}
+  - name: ${flywayCN}
+    image: ${flywayCI}
+    tty: true
+    command:
+    - cat
+    securityContext:
+      runAsUser: 0
+"""
+        }
+    }
+    stages {
+        stage('Populate DB') {
+            steps {
+                script {
+                    container(flywayCN) {
+                        dir(flywayCN) {
+                            sh 'flyway info'
+                            sh 'flyway migrate'
+                            sh 'flyway info'
+                        }
+                    }
+                }
+            }
+        }
+        stage('Run simple check') {
+            steps {
+                script {
+                    container(flywayCN) {
+                        dir('test') {
+                            sh 'ls'
+                            sh './tests.sh'
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
